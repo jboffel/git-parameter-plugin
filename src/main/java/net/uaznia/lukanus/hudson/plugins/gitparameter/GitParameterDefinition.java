@@ -9,12 +9,16 @@ import hudson.model.AbstractProject;
 import hudson.model.Hudson;
 import hudson.model.ParameterDefinition;
 import hudson.model.ParametersDefinitionProperty;
+import hudson.model.Run;
 import hudson.plugins.git.Branch;
 import hudson.plugins.git.GitException;
 import hudson.plugins.git.Revision;
 import hudson.plugins.git.GitSCM;
 import hudson.plugins.git.GitTool;
+import hudson.plugins.git.UserRemoteConfig;
 import hudson.scm.SCM;
+import hudson.security.ACL;
+import hudson.util.ListBoxModel;
 
 import java.io.File;
 import java.io.IOException;
@@ -33,21 +37,26 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import jenkins.model.Jenkins;
-import hudson.util.ListBoxModel;
 import net.sf.json.JSONArray;
 import net.sf.json.JSONObject;
 
 import org.apache.commons.lang.StringUtils;
 import org.eclipse.jgit.lib.ObjectId;
+import org.eclipse.jgit.transport.RemoteConfig;
+import org.eclipse.jgit.transport.URIish;
 import org.jenkinsci.plugins.gitclient.FetchCommand;
 import org.jenkinsci.plugins.gitclient.Git;
 import org.jenkinsci.plugins.gitclient.GitClient;
-import org.eclipse.jgit.transport.RemoteConfig;
-import org.eclipse.jgit.transport.URIish;
+import org.jenkinsci.plugins.gitclient.trilead.CredentialsProviderImpl;
 import org.kohsuke.stapler.AncestorInPath;
 import org.kohsuke.stapler.DataBoundConstructor;
 import org.kohsuke.stapler.QueryParameter;
 import org.kohsuke.stapler.StaplerRequest;
+
+import com.cloudbees.plugins.credentials.CredentialsMatchers;
+import com.cloudbees.plugins.credentials.CredentialsProvider;
+import com.cloudbees.plugins.credentials.common.StandardUsernameCredentials;
+import com.cloudbees.plugins.credentials.domains.URIRequirementBuilder;
 
 public class GitParameterDefinition extends ParameterDefinition implements
 		Comparable<GitParameterDefinition> {
@@ -273,6 +282,7 @@ public class GitParameterDefinition extends ParameterDefinition implements
 		try {
 			environment = project.getSomeBuildWithWorkspace().getEnvironment(
 					TaskListener.NULL);
+			
 		} catch (Exception e) {
 		}
 
@@ -283,6 +293,7 @@ public class GitParameterDefinition extends ParameterDefinition implements
 				GitClient newgit = new Git(TaskListener.NULL, environment)
 						.using(defaultGitExe).in(project.getSomeWorkspace())
 						.getClient();
+				
 				FilePath wsDir = null;
 				if (project.getSomeBuildWithWorkspace() != null) {
 					wsDir = project.getSomeBuildWithWorkspace().getWorkspace();
@@ -309,6 +320,30 @@ public class GitParameterDefinition extends ParameterDefinition implements
 					String errMsg = "!No workspace. Please build the project at least once";
 					return Collections.singletonMap(errMsg, errMsg);
 				}
+
+				for (UserRemoteConfig uc : git.getUserRemoteConfigs()) {
+					if (uc.getCredentialsId() != null) {
+						String url = uc.getUrl();
+						StandardUsernameCredentials credentials = CredentialsMatchers
+								.firstOrNull(
+										CredentialsProvider
+												.lookupCredentials(
+														StandardUsernameCredentials.class,
+														project, ACL.SYSTEM,
+														URIRequirementBuilder
+																.fromUri(url)
+																.build()),
+										CredentialsMatchers.allOf(
+												CredentialsMatchers.withId(uc
+														.getCredentialsId()),
+												GitClient.CREDENTIALS_MATCHER));
+						if (credentials != null) {
+							LOGGER.log(Level.INFO, "getSomeBuildWithWorkspace setCredentials "+ credentials.getDescription());
+							newgit.setCredentials(credentials);
+						}
+					}
+				}
+				
 				FetchCommand fetch = newgit.fetch_().from(remoteURL,
 						repository.getFetchRefSpecs());
 				fetch.execute();
@@ -526,7 +561,6 @@ public class GitParameterDefinition extends ParameterDefinition implements
 				items.add("!No Git repository configured in SCM configuration");
 				return items;
 			}
-
 			ParametersDefinitionProperty prop = project
 					.getProperty(ParametersDefinitionProperty.class);
 			if (prop != null) {
